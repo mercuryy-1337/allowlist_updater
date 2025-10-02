@@ -1,29 +1,48 @@
-﻿using Octokit;
+using Octokit;
 using System;
 using System.IO;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 class Program
 {
-    private const string FilePath = @"C:\apps\metadata\i2p\allowlist.json";
+    private const string FilePath = @"C:\apps\metadata\allowlist.json";
     private const string RepoOwner = "mercuryy-1337";
     private const string RepoName = "geforcenow";
-    private const string Branch = "main"; // change if your default branch is different
+    private const string Branch = "main";
 
-    // 🔑 Hardcode your GitHub token here
-    private const string Token = "ghp_yourPersonalAccessTokenHere";
+    // 🔑 Hardcode Github Token {Personal Use only}
+    private const string Token = "token here";
 
     static async Task Main()
     {
-        if (string.IsNullOrWhiteSpace(Token))
+        LogInfo("Starting Allowlist Uploader...");
+
+        if (string.IsNullOrEmpty(Token))
         {
-            LogError("GitHub token not set. Please provide a valid token.");
+            LogError("GitHub token is missing. Please set the token in code.");
             return;
         }
 
         if (!File.Exists(FilePath))
         {
-            LogError($"File not found: {FilePath}");
+            LogError("File not found: " + FilePath);
+            return;
+        }
+
+        string fileName = Path.GetFileName(FilePath);
+        string rawJson = File.ReadAllText(FilePath);
+
+        // ✅ Pretty-print JSON
+        string formattedJson;
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            formattedJson = JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            LogError("Failed to parse/format JSON: " + ex.Message);
             return;
         }
 
@@ -32,44 +51,38 @@ class Program
             Credentials = new Credentials(Token)
         };
 
+        var repo = await github.Repository.Get(RepoOwner, RepoName);
+
         try
         {
-            var repo = await github.Repository.Get(RepoOwner, RepoName);
+            // Check if file already exists
+            var existingFile = await github.Repository.Content.GetAllContentsByRef(
+                repo.Id, fileName, Branch);
 
-            string fileName = Path.GetFileName(FilePath);
-            string fileContent = File.ReadAllText(FilePath);
+            // Update existing file
+            var updateRequest = new UpdateFileRequest(
+                $"Update {fileName}",
+                formattedJson,
+                existingFile[0].Sha,
+                Branch);
 
-            try
-            {
-                // ✅ Try to fetch existing file
-                var existingFile = await github.Repository.Content.GetAllContentsByRef(
-                    repo.Id, fileName, Branch);
+            await github.Repository.Content.UpdateFile(repo.Id, fileName, updateRequest);
+            LogSuccess($"Updated {fileName} in repo.");
+        }
+        catch (NotFoundException)
+        {
+            // Create new file if not found
+            var createRequest = new CreateFileRequest(
+                $"Add {fileName}",
+                formattedJson,
+                Branch);
 
-                // Update existing file
-                var updateRequest = new UpdateFileRequest(
-                    $"Update {fileName}",
-                    fileContent,
-                    existingFile[0].Sha,
-                    Branch);
-
-                await github.Repository.Content.UpdateFile(repo.Id, fileName, updateRequest);
-                LogSuccess($"File '{fileName}' updated in repo.");
-            }
-            catch (NotFoundException)
-            {
-                // File does not exist → create it
-                var createRequest = new CreateFileRequest(
-                    $"Add {fileName}",
-                    fileContent,
-                    Branch);
-
-                await github.Repository.Content.CreateFile(repo.Id, fileName, createRequest);
-                LogSuccess($"File '{fileName}' created in repo.");
-            }
+            await github.Repository.Content.CreateFile(repo.Id, fileName, createRequest);
+            LogSuccess($"Created {fileName} in repo.");
         }
         catch (Exception ex)
         {
-            LogError($"Unexpected error: {ex.Message}");
+            LogError("GitHub operation failed: " + ex.Message);
         }
     }
 
